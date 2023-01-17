@@ -2,6 +2,9 @@ import argparse
 import torch
 import utils
 import wandb
+import numpy as np
+import matplotlib.pyplot as plt
+
 from dw4_experiment import losses
 from dw4_experiment.dataset import get_data
 from dw4_experiment.models import get_model
@@ -10,12 +13,12 @@ from flows.utils import remove_mean
 
 
 parser = argparse.ArgumentParser(description='SE3')
-parser.add_argument('--model', type=str, default='simple_dynamics',
+parser.add_argument('--model', type=str, default='egnn_dynamics',
                     help='our_dynamics | schnet | simple_dynamics | kernel_dynamics | egnn_dynamics | gnn_dynamics')
-parser.add_argument('--data', type=str, default='lj13',
+parser.add_argument('--data', type=str, default='dw4',
                     help='dw4 | lj13')
-parser.add_argument('--n_epochs', type=int, default=300)
-parser.add_argument('--batch_size', type=int, default=100)
+parser.add_argument('--n_epochs', type=int, default=20)  # 100
+parser.add_argument('--batch_size', type=int, default=32)  # 100
 parser.add_argument('--lr', type=float, default=5e-4)
 parser.add_argument('--n_data', type=int, default=1000,
                     help="Number of training samples")
@@ -34,7 +37,7 @@ parser.add_argument('--nf', type=int, default=32,
 parser.add_argument('--n_layers', type=int, default=3,
                     help='number of layers')
 parser.add_argument('--name', type=str, default='debug')
-parser.add_argument('--wandb_usr', type=str, default='')
+parser.add_argument('--wandb_usr', type=str, default='lollcat')
 parser.add_argument('--n_report_steps', type=int, default=1)
 parser.add_argument('--test_epochs', type=int, default=2)
 parser.add_argument('--attention', type=eval, default=True,
@@ -62,6 +65,21 @@ elif args.data == 'lj13':
     dim = n_particles * n_dims
 else:
     raise Exception('wrong data partition: %s' % args.data)
+
+
+def plot_sample_hist(x, ax, *args, **kwargs):
+    differences = []
+    for i in range(x.shape[0]):
+        differences.append(np.linalg.norm(x[i] - x[i, :, None], axis=-1).flatten())
+    d = np.concatenate(differences)
+    d = d[d != 0.0]
+    ax.hist(d, bins=50, density=True, alpha=0.4, *args, **kwargs)
+
+
+def sample(prior, flow, n_nodes = 4, dim = 2, batch_size=100):
+    z = prior.sample((batch_size, n_nodes, dim), device='cpu')
+    x = flow.reverse(z)
+    return x
 
 
 def main():
@@ -95,6 +113,17 @@ def main():
     for epoch in range(args.n_epochs):
         nll_epoch = []
         flow.set_trace(args.trace)
+
+
+        if epoch % (args.n_epochs // 10) == 0:
+            x = sample(prior, flow, batch_size=1000, n_nodes=4, dim=2)
+            fig, axs = plt.subplots()
+            plot_sample_hist(x, axs, label="flow samples")
+            plot_sample_hist(np.reshape(data_train, (-1, 4, 2)), axs, label='train samples')
+            plt.legend()
+            plt.show()
+
+
         for it, idxs in enumerate(batch_iter_train):
             batch = data_train[idxs]
             assert batch.size(0) == args.batch_size
@@ -139,13 +168,13 @@ def main():
 
         # wandb.log({"Train Epoch NLL": np.mean(nll_epoch)}, commit=False)
 
-        if epoch % args.test_epochs == 0:
-            val_loss = test(args, data_val, batch_iter_val, flow, prior, epoch, partition='val')
-            test_loss = test(args, data_test, batch_iter_test, flow, prior, epoch, partition='test')
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                best_test_loss = test_loss
-            print('Best val loss: %.4f \t Best test loss:  %.4f' % (best_val_loss, best_test_loss))
+        # if epoch % args.test_epochs == 0:
+        #     val_loss = test(args, data_val, batch_iter_val, flow, prior, epoch, partition='val')
+        #     test_loss = test(args, data_test, batch_iter_test, flow, prior, epoch, partition='test')
+        #     if val_loss < best_val_loss:
+        #         best_val_loss = val_loss
+        #         best_test_loss = test_loss
+        #     print('Best val loss: %.4f \t Best test loss:  %.4f' % (best_val_loss, best_test_loss))
 
         print()  # Clear line
 
@@ -183,6 +212,7 @@ def test(args, data_test, batch_iter_test, flow, prior, epoch, partition='test')
         # TODO: no evaluation on hold out data yet
     flow.set_trace(args.trace)
     return data_nll
+
 
 if __name__ == "__main__":
     if args.sweep_n_data:
